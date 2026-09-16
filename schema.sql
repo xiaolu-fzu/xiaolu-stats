@@ -1,4 +1,4 @@
--- D1 建表：执行  npx wrangler d1 execute xiaolu-stats --file=./schema.sql --remote
+-- D1 建表：npx wrangler d1 execute xiaolu-stats --file=./schema.sql --remote
 CREATE TABLE IF NOT EXISTS events (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   ts        INTEGER NOT NULL,      -- 毫秒时间戳
@@ -15,3 +15,10 @@ CREATE INDEX IF NOT EXISTS idx_events_type_day  ON events(type, day);
 CREATE INDEX IF NOT EXISTS idx_events_project   ON events(project);
 CREATE INDEX IF NOT EXISTS idx_events_link      ON events(project, link_type);
 CREATE INDEX IF NOT EXISTS idx_events_visitor   ON events(visitor);
+
+-- 不参与统计的来源地址（本机打开一次 ?self=1 即自动登记）
+CREATE TABLE IF NOT EXISTS excluded_ips (
+  ip         TEXT PRIMARY KEY,
+  note       TEXT,
+  created_at INTEGER
+);

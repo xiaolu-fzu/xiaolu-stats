@@ -15,7 +15,7 @@ export async function onRequestGet({ request, env }) {
   const days = Math.min(90, Math.max(1, parseInt(url.searchParams.get('days') || '7', 10) || 7));
   const db = env.DB;
 
-  const [pv, uv, todayPv, projects, links, daily, categories, recent] = await Promise.all([
+  const [pv, uv, todayPv, projects, links, daily, categories, recent, excluded] = await Promise.all([
     db.prepare("SELECT COUNT(*) c FROM events WHERE type='page_view'").first(),
     db.prepare("SELECT COUNT(DISTINCT visitor) c FROM events").first(),
     db.prepare("SELECT COUNT(*) c FROM events WHERE type='page_view' AND day=?").bind(today()).first(),
@@ -24,6 +24,7 @@ export async function onRequestGet({ request, env }) {
     db.prepare("SELECT day, SUM(CASE WHEN type='page_view' THEN 1 ELSE 0 END) pv, COUNT(DISTINCT visitor) uv FROM events WHERE day>=? GROUP BY day ORDER BY day").bind(dayBefore(days - 1)).all(),
     db.prepare("SELECT type, COUNT(*) c FROM events GROUP BY type").all(),
     db.prepare("SELECT ts, type, project, link_type FROM events ORDER BY id DESC LIMIT 30").all(),
+    db.prepare("SELECT ip, note, created_at FROM excluded_ips ORDER BY created_at DESC").all(),
   ]);
 
   const sum = (rows, k) => rows.reduce((a, r) => a + Number(r[k] || 0), 0);
@@ -36,5 +37,6 @@ export async function onRequestGet({ request, env }) {
     links: links.results,
     daily: daily.results,
     recent: recent.results,
+    excluded: excluded.results,
   });
 }
