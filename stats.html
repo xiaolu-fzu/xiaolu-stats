@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>网站统计 · 李嘉豪</title>
+<style>
+  :root{
+    --accent:#CC785C; --accent-dark:#B9624A; --bg:#FAF9F7; --card:#fff;
+    --text:#2B2B2B; --muted:#8A8177; --line:#EDE6DF; --ok:#5B8C6A;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;padding:28px 20px 60px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:22px;font-weight:700;letter-spacing:.02em}
+  h1 span{color:var(--accent)}
+  .sub{color:var(--muted);font-size:13px;margin-top:4px}
+  .bar{display:flex;gap:10px;align-items:center;margin:18px 0 22px;flex-wrap:wrap}
+  input[type=password],input[type=text]{flex:1 1 260px;min-width:200px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;font:inherit;color:inherit}
+  button{padding:10px 18px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer;transition:.16s}
+  button:hover{background:var(--accent-dark)}
+  button.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+  .card .k{font-size:12.5px;color:var(--muted);letter-spacing:.04em}
+  .card .v{font-size:34px;font-weight:700;line-height:1.25;color:var(--accent);margin-top:2px}
+  .card .n{font-size:12px;color:var(--muted)}
+  h2{font-size:16px;margin:26px 0 10px;display:flex;align-items:center;gap:8px}
+  h2::before{content:"";width:4px;height:15px;border-radius:2px;background:var(--accent)}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{font-size:12.5px;color:var(--muted);font-weight:600;background:#FCFAF8}
+  tr:last-child td{border-bottom:0}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:var(--accent)}
+  .meter{height:6px;border-radius:3px;background:#F1EAE4;overflow:hidden;min-width:80px}
+  .meter i{display:block;height:100%;background:var(--accent);border-radius:3px}
+  .chart{display:flex;align-items:flex-end;gap:8px;height:150px;padding:16px 14px 0}
+  .chart .col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;min-width:0}
+  .chart .bx{width:100%;background:linear-gradient(180deg,var(--accent),#E0A08A);border-radius:5px 5px 0 0;min-height:3px;transition:.2s}
+  .chart .lb{font-size:11px;color:var(--muted);white-space:nowrap}
+  .chart .vv{font-size:11px;color:var(--text);font-weight:600}
+  .empty{padding:22px 14px;color:var(--muted);font-size:13.5px}
+  .msg{margin-top:14px;font-size:13.5px;color:var(--muted)}
+  .msg.err{color:#C0592F}
+  .scroll{overflow-x:auto}
+  @media (max-width:640px){
+    .cards{grid-template-columns:1fr}
+    .card .v{font-size:28px}
+    th,td{padding:9px 10px;font-size:13px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>网站统计 <span>·</span> 李嘉豪个人作品集</h1>
+  <div class="sub">打开次数 / 独立访客 / 各项目访问 / 各产品链接点击</div>
+
+  <div class="bar">
+    <input id="token" type="password" placeholder="输入统计密钥（token）" autocomplete="off">
+    <button id="load">查看统计</button>
+    <button id="refresh" class="ghost">刷新</button>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="k">网站打开总次数</div><div class="v" id="pv">–</div><div class="n">含所有访客累计</div></div>
+    <div class="card"><div class="k">独立访客数</div><div class="v" id="uv">–</div><div class="n">按浏览器匿名 ID 去重</div></div>
+    <div class="card"><div class="k">今日打开</div><div class="v" id="today">–</div><div class="n">东八区当天</div></div>
+  </div>
+
+  <h2>各项目访问排行</h2>
+  <div class="panel scroll"><table id="tProjects"><thead><tr><th>项目</th><th>访问次数</th><th style="width:38%">占比</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>各项目产品链接点击</h2>
+  <div class="panel scroll"><table id="tLinks"><thead><tr><th>项目</th><th>按钮</th><th>点击次数</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>近 7 天趋势</h2>
+  <div class="panel"><div class="chart" id="chart"></div></div>
+
+  <div class="msg" id="msg"></div>
+</div>
+
+<script>
+(function(){
+  var API = location.origin;                 // 与后端同域部署
+  var $ = function(id){ return document.getElementById(id); };
+  var tokenInput = $('token'), msg = $('msg');
+
+  // token：URL 参数 ?token= 优先，其次 localStorage
+  var qs = new URLSearchParams(location.search);
+  var urlToken = qs.get('token');
+  if (urlToken) localStorage.setItem('stats_token', urlToken);
+  tokenInput.value = localStorage.getItem('stats_token') || '';
+
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+  function setMsg(t, err){ msg.textContent = t || ''; msg.className = 'msg' + (err ? ' err' : ''); }
+
+  function render(d){
+    $('pv').textContent = d.pv || 0;
+    $('uv').textContent = d.uv || 0;
+    $('today').textContent = d.today || 0;
+
+    var tp = $('tProjects').querySelector('tbody');
+    var list = (d.projects || []);
+    var max = list.reduce(function(a, r){ return Math.max(a, r.c); }, 0) || 1;
+    tp.innerHTML = list.length ? list.map(function(r){
+      return '<tr><td>' + esc(r.project) + '</td><td class="num">' + r.c + '</td>' +
+        '<td><div class="meter"><i style="width:' + Math.round(r.c / max * 100) + '%"></i></div></td></tr>';
+    }).join('') : '<tr><td colspan="3" class="empty">还没有数据</td></tr>';
+
+    var tl = $('tLinks').querySelector('tbody');
+    var lk = (d.links || []);
+    tl.innerHTML = lk.length ? lk.map(function(r){
+      return '<tr><td>' + esc(r.project || '（未标注）') + '</td><td>' + esc(r.link_type || '–') + '</td><td class="num">' + r.c + '</td></tr>';
+    }).join('') : '<tr><td colspan="3" class="empty">还没有数据</td></tr>';
+
+    var ch = $('chart'), daily = (d.daily || []);
+    var mx = daily.reduce(function(a, r){ return Math.max(a, Number(r.pv) || 0); }, 0) || 1;
+    ch.innerHTML = daily.length ? daily.map(function(r){
+      var h = Math.max(3, Math.round((Number(r.pv) || 0) / mx * 110));
+      var lb = String(r.day).slice(5);
+      return '<div class="col"><div class="vv">' + (r.pv || 0) + '</div><div class="bx" style="height:' + h + 'px"></div><div class="lb">' + lb + '</div></div>';
+    }).join('') : '<div class="empty">近 7 天还没有数据</div>';
+  }
+
+  function load(){
+    var token = tokenInput.value.trim();
+    if (!token) { setMsg('请先输入统计密钥', true); return; }
+    localStorage.setItem('stats_token', token);
+    setMsg('加载中…');
+    fetch(API + '/api/stats?token=' + encodeURIComponent(token) + '&days=7', { cache: 'no-store' })
+      .then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); })
+      .then(function(res){
+        if (!res.ok) { setMsg(res.j && res.j.error ? res.j.error : '请求失败', true); return; }
+        render(res.j);
+        setMsg('更新于 ' + new Date().toLocaleString('zh-CN'));
+      })
+      .catch(function(e){ setMsg('网络错误：' + e.message, true); });
+  }
+
+  $('load').addEventListener('click', load);
+  $('refresh').addEventListener('click', load);
+  tokenInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') load(); });
+  if (tokenInput.value) load();
+})();
+</script>
+</body>
+</html>

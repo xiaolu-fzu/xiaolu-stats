@@ -1,0 +1,12 @@
+name = "xiaolu-stats"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "."
+
+# D1 数据库绑定（代码里用 env.DB 访问）
+[[d1_databases]]
+binding = "DB"
+database_name = "xiaolu-stats"
+database_id = "35063907-ec26-483b-877e-607b6cb1df63"
+
+# 统计密钥用加密环境变量，不要写在这里：
+#   npx wrangler pages secret put STATS_TOKEN --project-name xiaolu-stats
