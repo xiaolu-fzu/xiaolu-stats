@@ -20,6 +20,8 @@
   button{padding:10px 18px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer;transition:.16s}
   button:hover{background:var(--accent-dark)}
   button.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+  button.danger{background:#fff;color:#B3402F;border:1px solid rgba(179,64,47,.5)}
+  button.danger:hover{background:#B3402F;color:#fff;border-color:#B3402F}
   .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
   .card .k{font-size:12.5px;color:var(--muted);letter-spacing:.04em}
@@ -60,6 +62,7 @@
     <input id="token" type="password" placeholder="输入统计密钥（token）" autocomplete="off">
     <button id="load">查看统计</button>
     <button id="refresh" class="ghost">刷新</button>
+    <button id="clear" class="danger">清除数据</button>
   </div>
 
   <div class="cards">
@@ -138,8 +141,28 @@
       .catch(function(e){ setMsg('网络错误：' + e.message, true); });
   }
 
+  function clearData() {
+    if (!tokenInput.value.trim()) { setMsg('请先输入统计密钥', true); return; }
+    var pw = window.prompt('清除统计记录\n\n只清空统计数据（打开次数/项目访问/链接点击），排除名单会保留。\n请输入密码：');
+    if (pw === null) return;
+    if (!window.confirm('确定清除全部统计记录吗？此操作不可撤销。')) return;
+    setMsg('正在清除…');
+    fetch(API + '/api/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ password: pw })
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) { setMsg(res.j && res.j.error ? res.j.error : '清除失败', true); return; }
+        setMsg('已清除 ' + res.j.deleted + ' 条统计记录（排除名单保留 ' + res.j.excluded_kept + ' 条）');
+        load();
+      })
+      .catch(function (e) { setMsg('网络错误：' + e.message, true); });
+  }
+
   $('load').addEventListener('click', load);
   $('refresh').addEventListener('click', load);
+  $('clear').addEventListener('click', clearData);
   tokenInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') load(); });
   if (tokenInput.value) load();
 })();

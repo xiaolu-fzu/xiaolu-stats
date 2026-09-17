@@ -11,7 +11,8 @@
 | `functions/api/track.js` | 事件写入（POST /api/track），只收三种事件，静默失败 |
 | `functions/api/stats.js` | 统计查询（GET /api/stats?token=xxx），token 鉴权 |
 | `functions/api/_lib.js` | 共用工具（CORS / JSON / 时间 / 清洗） |
-| `stats.html` | 看板页（暖陶配色，三个大数字 + 两张排行 + 7 天趋势） |
+| `functions/api/clear.js` | 清除统计数据（POST /api/clear，密码校验，只清 events，保留排除名单） |
+| `stats.html` | 看板页（暖陶配色，三个大数字 + 两张排行 + 7 天趋势 + 清除数据按钮） |
 | `schema.sql` | D1 建表语句 |
 
 ## 部署步骤
