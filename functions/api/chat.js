@@ -81,35 +81,66 @@ export async function onRequestPost({ request, env }) {
     .map(function (h) { return { role: h.role === 'assistant' ? 'assistant' : 'user', content: String(h.content).slice(0, 800) }; }) : [];
 
   const base = (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
-  let upstream;
-  try {
-    upstream = await fetch(base + '/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + env.DEEPSEEK_API_KEY },
-      body: JSON.stringify({
-        model: env.LLM_MODEL || 'deepseek-chat',
-        messages: [{ role: 'system', content: SYSTEM }].concat(history).concat([{ role: 'user', content: user }]),
-        temperature: 0.3,
-        max_tokens: 800,
-        response_format: { type: 'json_object' }
-      })
-    });
-  } catch (e) {
-    return json({ error: '上游连接失败：' + String(e).slice(0, 120) }, 502);
-  }
-  if (!upstream.ok) {
-    const t = await upstream.text();
-    return json({ error: '上游 ' + upstream.status + '：' + t.slice(0, 200) }, 502);
+
+  // 调用一次模型并解析出 JSON（失败或空返回时由调用方重试）
+  async function callOnce(withHistory) {
+    const msgs = [{ role: 'system', content: SYSTEM }]
+      .concat(withHistory ? history : [])
+      .concat([{ role: 'user', content: user }]);
+    let up;
+    try {
+      up = await fetch(base + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + env.DEEPSEEK_API_KEY },
+        body: JSON.stringify({
+          model: env.LLM_MODEL || 'deepseek-chat',
+          messages: msgs,
+          temperature: 0.4,
+          max_tokens: 900,
+          response_format: { type: 'json_object' }
+        })
+      });
+    } catch (e) {
+      return { err: '上游连接失败：' + String(e).slice(0, 120) };
+    }
+    if (!up.ok) {
+      const t = await up.text();
+      return { err: '上游 ' + up.status + '：' + t.slice(0, 200) };
+    }
+    const d = await up.json();
+    const text = (d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch (e) {
+      const m = text.match(/\{[\s\S]*\}/);
+      if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} }
+    }
+    return { parsed: parsed, text: text };
   }
 
-  const data = await upstream.json();
-  const text = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
-  let parsed = null;
-  try { parsed = JSON.parse(text); } catch (e) {
-    const m = text.match(/\{[\s\S]*\}/);
-    if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} }
+  // 第一次：带历史
+  let res = await callOnce(true);
+  if (res.err) return json({ error: res.err }, 502);
+
+  // 兜底 1：返回空 / 解析失败 → 去掉历史重试一次（短问题+长历史最容易触发空返回）
+  let parsed = res.parsed;
+  if (!parsed || typeof parsed.reply !== 'string' || !parsed.reply.trim()) {
+    const retry = await callOnce(false);
+    if (!retry.err && retry.parsed && typeof retry.parsed.reply === 'string' && retry.parsed.reply.trim()) {
+      parsed = retry.parsed;
+    } else if (!parsed && retry.parsed) {
+      parsed = retry.parsed;
+    }
   }
-  if (!parsed || typeof parsed.reply !== 'string') return json({ reply: text || '（模型没有返回内容）', action: null, followups: [] });
+
+  // 兜底 2：仍然为空 → 给一句得体的回退，而不是把空白丢给用户
+  if (!parsed || typeof parsed.reply !== 'string' || !parsed.reply.trim()) {
+    return json({
+      reply: '抱歉，我刚才没组织好语言。你可以换个说法再问一次；也可以直接说「打开 <项目名>」或「切到 <分类>」，我会帮你执行。',
+      action: null,
+      followups: ['有据是什么？', '有哪些能直接玩的？', '哪个项目最能体现数据分析？']
+    });
+  }
+
   var fu = Array.isArray(parsed.followups) ? parsed.followups.filter(function (x) { return typeof x === 'string' && x.trim(); }).slice(0, 3) : [];
-  return json({ reply: parsed.reply, action: parsed.action && parsed.action.type ? parsed.action : null, followups: fu });
+  return json({ reply: parsed.reply.trim(), action: parsed.action && parsed.action.type ? parsed.action : null, followups: fu });
 }
