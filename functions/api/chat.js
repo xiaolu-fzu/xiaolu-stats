@@ -36,6 +36,9 @@ const SYSTEM = [
   '你是「小洄」，李嘉豪个人作品集网站的 AI 助手。性格亲切、说话自然，像真人助手（不要机械罗列、不要客服腔）。',
   '只依据下面给出的项目资料回答，绝对不要编造资料里没有的项目、数字或链接；资料里没有的就直说不知道。',
   '【知识库优先｜重要】资料里若出现「项目文档原文切片」，那是从项目文档里检索出来的原文，**比卡片简介更权威更细**——请优先依据它回答；必要时可以说出来源（如「这一点出自《有据_技术方案与决策记录》的检索策略一节」）。',
+  '【项目一致性｜极其重要】若资料里出现「知识库提示」说当前项目没有文档切片，说明这个项目**确实没有可供引用的原文**——',
+  '此时**只依据卡片资料回答**，卡片里没有的就直说「这部分细节我手头没有，可以翻它的需求/开发文档」，',
+  '**绝对禁止**改用别的项目（哪怕它的资料看着更贴题）的内容来回答。张冠李戴比说"不知道"严重得多。',
   '【项目一致性｜极其重要】每条文档切片都标了所属项目（如「【ProListing · 离线记账应用 · 产品规格】」）。**只使用与你当前正在回答的那个项目一致的切片**；若资料里混进了别的项目的切片（例如用户在问 ProListing，却检索到真菌星域的资料），**一律不要拿别的项目的内容来回答**——宁可说「这个项目的这部分资料我没查到」。张冠李戴是严重错误。',
   '【数量与清单｜重要】资料开头有「【项目总览】」，里面写了作品集的**项目总数、各分类数量、完整项目清单**（后方还附了与本次问题最相关的项目详情）。',
   '凡是问「一共有多少项目 / 有哪些分类 / 都做过什么 / 列一下全部」这类问题，**一律以【项目总览】为准**去数、去列举，不要只用后面那几条相关详情来回答，更不要说「我只知道几个」。',
@@ -246,11 +249,8 @@ export async function onRequestPost({ request, env }) {
       const more = await searchKB(env, searchQuery, 8 - hits.length);
       for (const x of more) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
     }
-    // 项目判定失效时的最后兜底（仅当项目内一条都没有）
-    if (projectHint && !hits.length) {
-      const more = await searchKB(env, searchQuery, 6);
-      for (const x of more) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
-    }
+    // ★ 绝不做「项目内 0 条就全库兜底」：那等于把别的项目的内容端上来（曾导致问 AIGC 调研却答「把关」）。
+    //   项目内查不到，就老老实实告诉模型「这个项目没有文档切片」，由它依据卡片资料回答或直说没查到。
     if (hits.length < 4 && searchQuery !== question) {
       const more2 = await searchKB(env, question, 8 - hits.length);
       for (const x of more2) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
@@ -258,6 +258,10 @@ export async function onRequestPost({ request, env }) {
     if (hits.length) {
       kbHitCount = hits.length;
       if (projectHint) kbBlock += '\n（注意：以上切片均来自「' + projectHint + '」这个项目，请只依据它们回答。）';
+    } else if (projectHint) {
+      kbBlock = '\n\n【知识库提示】当前讨论的项目是「' + projectHint + '」，但知识库里**没有**这个项目的文档切片。' +
+        '因此你**只能依据上面的卡片资料**回答；卡片里也没有的细节，就直接说「这个项目的这部分细节我手头没有，' +
+        '它的需求文档/开发文档里可能有」——**绝对不要拿别的项目的内容来回答**。';
       kbBlock = '\n\n【项目文档原文切片（检索自知识库，共 ' + hits.length + ' 条，请优先依据这些细节回答）】\n' +
         hits.map(function (h, i) {
           return (i + 1) + '. 【' + (h.project_name || '') + ' · ' + (h.doc_title || '') +
