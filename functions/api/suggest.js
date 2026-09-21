@@ -33,6 +33,10 @@ const SYSTEM = [
   '每条 8~22 个字，口语化、像用户自己会说的话；不要编号、不要问号以外的标点；不要重复用户已经问过的内容；',
   '不要出现资料里根本没有的项目或链接。',
   '',
+  '【硬性要求｜必须遵守】**必须输出 3 条**（数组长度必须等于 3），**永远不要输出空数组**，也不要输出 1 条或 2 条。',
+  '即使信息很少（例如用户只说了「那把关呢？」、助手的回答只有一两句），也必须基于【正在讨论的项目】与【当前项目资料】，',
+  '给出三条具体、点得出口的追问；信息不足时，就问这个项目**最基础也最关键的三个方面**（它是给谁用的 / 它怎么实现的 / 它最难的地方）。',
+  '',
   '只输出 JSON：{"followups":["追问1","追问2","追问3"]}'
 ].join('\n');
 
@@ -58,8 +62,11 @@ export async function onRequestPost({ request, env }) {
     all = body.allProjects.map(function (t) { return clean(t, 40); }).filter(Boolean).slice(0, 30).join('；');
   }
 
+  // 当前讨论的项目：信息量少的轮次（如「那把关呢？」）靠它才不至于无从下手
+  const cur = clean(body.currentProject, 60);
   const user = '用户的问题：' + question + '\n\n助手的回答：' + reply +
-    (proj ? '\n\n【当前项目】\n' + proj : '') +
+    (cur ? '\n\n【正在讨论的项目】' + cur : '') +
+    (proj ? '\n\n【当前项目资料】\n' + proj : '') +
     (all ? '\n\n【全部项目】（第 2 条追问必须从中点名一个与当前项目不同的）\n' + all : '');
   const base = (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
 
