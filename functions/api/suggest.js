@@ -64,7 +64,7 @@ export async function onRequestPost({ request, env }) {
         model: env.LLM_MODEL || 'deepseek-chat',
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
         temperature: 0.6,
-        max_tokens: 220,
+        max_tokens: Number(env.LLM_SUGGEST_TOKENS || 400),
         response_format: { type: 'json_object' }
       })
     });

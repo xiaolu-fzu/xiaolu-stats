@@ -101,7 +101,7 @@ async function rewriteQuery(env, question, lastReply) {
           { role: 'user', content: '上一轮助手的回答：\n' + String(lastReply).slice(0, 600) + '\n\n用户的新问题：' + question }
         ],
         temperature: 0,
-        max_tokens: 120
+        max_tokens: Number(env.LLM_REWRITE_TOKENS || 300)
       })
     });
     if (!up.ok) return question;
@@ -216,7 +216,7 @@ export async function onRequestPost({ request, env }) {
           model: env.LLM_MODEL || 'deepseek-chat',
           messages: msgs,
           temperature: 0.4,
-          max_tokens: 900,
+          max_tokens: Number(env.LLM_MAX_TOKENS || 2400),
           response_format: { type: 'json_object' }
         })
       });
