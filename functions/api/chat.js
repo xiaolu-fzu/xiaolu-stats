@@ -251,8 +251,9 @@ export async function onRequestPost({ request, env }) {
     }
     // ★ 绝不做「项目内 0 条就全库兜底」：那等于把别的项目的内容端上来（曾导致问 AIGC 调研却答「把关」）。
     //   项目内查不到，就老老实实告诉模型「这个项目没有文档切片」，由它依据卡片资料回答或直说没查到。
+    //   注意：这里也必须带上 projectHint —— 漏掉它就会绕过项目锁定、在全库乱搜（这正是上一次没修干净的原因）。
     if (hits.length < 4 && searchQuery !== question) {
-      const more2 = await searchKB(env, question, 8 - hits.length);
+      const more2 = await searchKB(env, question, 8 - hits.length, projectHint);
       for (const x of more2) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
     }
     if (hits.length) {
