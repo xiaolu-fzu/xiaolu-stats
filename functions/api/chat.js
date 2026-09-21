@@ -22,7 +22,10 @@ const REWRITE_SYSTEM = [
   '3. **保留用户的原意**，不要添加他没问过的新需求；',
   '4. **project 字段**填「上一轮在讨论的项目名」（如 ProListing、有据、真菌星域）；',
   '   若上一轮没有明确在讨论某个项目，就填空字符串 ""；**不要猜**。',
-  '5. 只输出 JSON，不要任何其他文字。',
+  '5. **必须保留用户新问题的意图**：用户问「怎么来的/为什么」就改写成问来源与动机，问「最难/坑」就改写成问难点，问「多少钱/多久」就改写成问对应维度。',
+  '   **绝对不要用上一轮回答的主题去替换用户的新问题**——例如上一轮在讲「最难的地方」，用户新问「这个点子最早是怎么冒出来的」，',
+  '   改写结果必须是「X 这个点子最早是怎么来的」，而**不能**变成「X 最难的地方」。这是最常见的错误。',
+  '6. 只输出 JSON，不要任何其他文字。',
   '',
   '输出格式：{"query":"改写后的检索查询（不超过 40 字）","project":"项目名或空字符串"}'
 ].join('\n');
@@ -188,13 +191,42 @@ export async function onRequestPost({ request, env }) {
   if (!question) return json({ error: '问题不能为空' }, 400);
 
   // ① 先做查询改写：把「上一轮回答 + 新问题」改成独立查询（用户说的「它/这个」会被还原）
-  const lastReply = clean(body.lastReply, 1500);
-  let searchQuery = question, projectHint = '';
+  let lastReply = clean(body.lastReply, 1500);
+  const hist = Array.isArray(body.history) ? body.history : [];
+
+  // ★ 加固 1：lastReply 为空（追问点得太快时会出现）→ 从历史里取最后一条助手消息
+  if (!lastReply) {
+    for (let i = hist.length - 1; i >= 0; i--) {
+      if (hist[i] && hist[i].role === 'assistant' && hist[i].content) { lastReply = clean(hist[i].content, 1500); break; }
+    }
+  }
+
+  // ★ 前端传来的「当前讨论的项目」优先级最高（前端最清楚这一轮在聊哪个项目）
+  const clientProject = clean(body.currentProject, 60);
+
+  let searchQuery = question, projectHint = clientProject || '';
   try {
     const rw = await rewriteQuery(env, question, lastReply);
     searchQuery = rw.query || question;
-    projectHint = rw.project || '';
+    if (!projectHint) projectHint = rw.project || '';
+    // 前端项目与改写结果不一致时：如果改写识别出**明确的新项目**（用户点名换项目），以改写为准
+    else if (rw.project && rw.project !== clientProject && question.indexOf(rw.project) >= 0) projectHint = rw.project;
   } catch (e) { searchQuery = question; }
+
+  // ★ 加固 2：仍没定出项目 → 从上文文本里匹配已知项目名（避免"猜项目"）
+  if (!projectHint) {
+    try {
+      const blob = (lastReply + ' ' + hist.map(function (h) { return h && h.content ? h.content : ''; }).join(' ')).slice(0, 4000);
+      if (blob) {
+        const rs = await env.DB.prepare('SELECT name FROM kb_projects').all();
+        for (const row of (rs.results || [])) {
+          const nm = String(row.name || '');
+          const key = nm.split('·')[0].trim();                 // 取「·」前的部分做匹配键
+          if (key && key.length >= 2 && blob.indexOf(key) >= 0) { projectHint = key; break; }
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+  }
 
   // ② 检索：**优先在判定出的项目内检索**（避免「创意/想法」这类通用词把别的项目串进来）
   let kbBlock = '', kbHitCount = 0;
@@ -321,7 +353,7 @@ export async function onRequestPost({ request, env }) {
     followups: fu,
     // 调试信息（前端不使用）：这次把问题改写成了什么、检索命中几条
     _debug: {
-      searchQuery: searchQuery, projectHint: projectHint, rewritten: searchQuery !== question,
+      searchQuery: searchQuery, projectHint: projectHint, clientProject: clientProject, rewritten: searchQuery !== question,
       kbHits: (typeof kbHitCount === 'number' ? kbHitCount : 0),
       model: usedFallbackModel ? 'deepseek-chat(兜底)' : (env.LLM_MODEL || 'deepseek-chat'),
       finish: (res.finish || ''), reasoningTokens: (res.reasoning || 0)
