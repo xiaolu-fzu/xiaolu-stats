@@ -10,6 +10,19 @@
  */
 import { json, noContent, clean } from './_lib.js';
 
+/* ── 查询改写（Query Rewriting）：把「上一轮回答 + 用户新问题」改写成独立完整的检索查询 ──
+   目的：用户常说「它」「这个」「上面说的」，直接拿去检索必然失焦；先还原指代再检索。 */
+const REWRITE_SYSTEM = [
+  '你是检索查询改写器。输入是「上一轮助手的回答」与「用户的新问题」。',
+  '任务：把用户的新问题改写成一个**独立、完整、可直接用于检索**的查询。',
+  '规则：',
+  '1. 把「它 / 这个 / 那个 / 上面说的 / 这几个」等指代，**还原成具体所指**（项目名、功能名、文档名）；',
+  '2. 补全省略的主语与语境，让这句话脱离上下文也能读懂；',
+  '3. **保留用户的原意**，不要添加他没问过的新需求；',
+  '4. 若新问题已经是完整独立的（没有指代、不依赖上文），**原样返回**即可；',
+  '5. 只输出改写后的查询文本（一句中文，不超过 40 字）；不要解释、不要加引号、不要加「查询：」这类前缀。'
+].join('\n');
+
 export async function onRequestOptions() { return noContent(); }
 
 const SYSTEM = [
@@ -73,6 +86,32 @@ const SYSTEM = [
   'followups 要求：2~3 条，每条 8~18 个字，口语化，可直接点着问，不要编号。'
 ].join('\n');
 
+/* 调模型做一次查询改写（首轮无上文则跳过，避免多余调用） */
+async function rewriteQuery(env, question, lastReply) {
+  if (!lastReply || !question) return question;
+  const base = (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
+  try {
+    const up = await fetch(base + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + env.DEEPSEEK_API_KEY },
+      body: JSON.stringify({
+        model: env.LLM_MODEL || 'deepseek-chat',
+        messages: [
+          { role: 'system', content: REWRITE_SYSTEM },
+          { role: 'user', content: '上一轮助手的回答：\n' + String(lastReply).slice(0, 600) + '\n\n用户的新问题：' + question }
+        ],
+        temperature: 0,
+        max_tokens: 120
+      })
+    });
+    if (!up.ok) return question;
+    const d = await up.json();
+    let q = (d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    q = q.trim().replace(/^[「"'“‘]+|[」"'”’]+$/g, '').replace(/^(查询|改写|检索查询)[:：]\s*/, '').split('\n')[0].trim();
+    return (q && q.length >= 2 && q.length <= 80) ? q : question;
+  } catch (e) { return question; }
+}
+
 /* ── 知识库检索：把项目文档切片查出来，作为回答依据（真 RAG 的 R 部分）── */
 const STOP = /^(为什么|什么|怎么|怎样|哪些|哪个|如何|可以|是否|这个|那个|以及|还是|不用|只用|我们|你们|他们|一个|一下|就是|不是|用了|有过|做过|关于|介绍)$/;
 function kbTerms(q) {
@@ -131,11 +170,21 @@ export async function onRequestPost({ request, env }) {
   const context = clean(body.context, 12000);
   if (!question) return json({ error: '问题不能为空' }, 400);
 
-  // 先查知识库：命中就作为「文档原文依据」附在卡片资料后面
-  let kbBlock = '';
+  // ① 先做查询改写：把「上一轮回答 + 新问题」改成独立查询（用户说的「它/这个」会被还原）
+  const lastReply = clean(body.lastReply, 1500);
+  let searchQuery = question;
+  try { searchQuery = await rewriteQuery(env, question, lastReply); } catch (e) { searchQuery = question; }
+
+  // ② 用改写后的查询检索知识库；若命中不足，再用原问题补一次
+  let kbBlock = '', kbHitCount = 0;
   try {
-    const hits = await searchKB(env, question, 8);
+    let hits = await searchKB(env, searchQuery, 8);
+    if (hits.length < 4 && searchQuery !== question) {
+      const more = await searchKB(env, question, 8 - hits.length);
+      for (const x of more) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
+    }
     if (hits.length) {
+      kbHitCount = hits.length;
       kbBlock = '\n\n【项目文档原文切片（检索自知识库，共 ' + hits.length + ' 条，请优先依据这些细节回答）】\n' +
         hits.map(function (h, i) {
           return (i + 1) + '. 【' + (h.project_name || '') + ' · ' + (h.doc_title || '') +
@@ -213,5 +262,11 @@ export async function onRequestPost({ request, env }) {
   }
 
   var fu = Array.isArray(parsed.followups) ? parsed.followups.filter(function (x) { return typeof x === 'string' && x.trim(); }).slice(0, 3) : [];
-  return json({ reply: parsed.reply.trim(), action: parsed.action && parsed.action.type ? parsed.action : null, followups: fu });
+  return json({
+    reply: parsed.reply.trim(),
+    action: parsed.action && parsed.action.type ? parsed.action : null,
+    followups: fu,
+    // 调试信息（前端不使用）：这次把问题改写成了什么、检索命中几条
+    _debug: { searchQuery: searchQuery, rewritten: searchQuery !== question, kbHits: (typeof kbHitCount === 'number' ? kbHitCount : 0) }
+  });
 }
