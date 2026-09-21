@@ -14,13 +14,17 @@ import { json, noContent, clean } from './_lib.js';
    目的：用户常说「它」「这个」「上面说的」，直接拿去检索必然失焦；先还原指代再检索。 */
 const REWRITE_SYSTEM = [
   '你是检索查询改写器。输入是「上一轮助手的回答」与「用户的新问题」。',
-  '任务：把用户的新问题改写成一个**独立、完整、可直接用于检索**的查询。',
+  '任务：① 把用户的新问题改写成独立完整的检索查询；② 判断这个问题针对的是**哪个项目**。',
+  '',
   '规则：',
   '1. 把「它 / 这个 / 那个 / 上面说的 / 这几个」等指代，**还原成具体所指**（项目名、功能名、文档名）；',
   '2. 补全省略的主语与语境，让这句话脱离上下文也能读懂；',
   '3. **保留用户的原意**，不要添加他没问过的新需求；',
-  '4. 若新问题已经是完整独立的（没有指代、不依赖上文），**原样返回**即可；',
-  '5. 只输出改写后的查询文本（一句中文，不超过 40 字）；不要解释、不要加引号、不要加「查询：」这类前缀。'
+  '4. **project 字段**填「上一轮在讨论的项目名」（如 ProListing、有据、真菌星域）；',
+  '   若上一轮没有明确在讨论某个项目，就填空字符串 ""；**不要猜**。',
+  '5. 只输出 JSON，不要任何其他文字。',
+  '',
+  '输出格式：{"query":"改写后的检索查询（不超过 40 字）","project":"项目名或空字符串"}'
 ].join('\n');
 
 export async function onRequestOptions() { return noContent(); }
@@ -29,6 +33,7 @@ const SYSTEM = [
   '你是「小洄」，李嘉豪个人作品集网站的 AI 助手。性格亲切、说话自然，像真人助手（不要机械罗列、不要客服腔）。',
   '只依据下面给出的项目资料回答，绝对不要编造资料里没有的项目、数字或链接；资料里没有的就直说不知道。',
   '【知识库优先｜重要】资料里若出现「项目文档原文切片」，那是从项目文档里检索出来的原文，**比卡片简介更权威更细**——请优先依据它回答；必要时可以说出来源（如「这一点出自《有据_技术方案与决策记录》的检索策略一节」）。',
+  '【项目一致性｜极其重要】每条文档切片都标了所属项目（如「【ProListing · 离线记账应用 · 产品规格】」）。**只使用与你当前正在回答的那个项目一致的切片**；若资料里混进了别的项目的切片（例如用户在问 ProListing，却检索到真菌星域的资料），**一律不要拿别的项目的内容来回答**——宁可说「这个项目的这部分资料我没查到」。张冠李戴是严重错误。',
   '【数量与清单｜重要】资料开头有「【项目总览】」，里面写了作品集的**项目总数、各分类数量、完整项目清单**（后方还附了与本次问题最相关的项目详情）。',
   '凡是问「一共有多少项目 / 有哪些分类 / 都做过什么 / 列一下全部」这类问题，**一律以【项目总览】为准**去数、去列举，不要只用后面那几条相关详情来回答，更不要说「我只知道几个」。',
   '【接着聊】下面会给出最近几轮对话，请顺着上下文回答：用户说「这两个 / 它们 / 那几个 / 刚才说的」时，指的就是你上一轮列举过的项目，直接按这个理解回答，不要反问用户「你指哪两个」。',
@@ -88,7 +93,7 @@ const SYSTEM = [
 
 /* 调模型做一次查询改写（首轮无上文则跳过，避免多余调用） */
 async function rewriteQuery(env, question, lastReply) {
-  if (!lastReply || !question) return question;
+  if (!lastReply || !question) return { query: question, project: '' };
   const base = (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
   try {
     const up = await fetch(base + '/chat/completions', {
@@ -101,15 +106,25 @@ async function rewriteQuery(env, question, lastReply) {
           { role: 'user', content: '上一轮助手的回答：\n' + String(lastReply).slice(0, 600) + '\n\n用户的新问题：' + question }
         ],
         temperature: 0,
-        max_tokens: Number(env.LLM_REWRITE_TOKENS || 300)
+        max_tokens: Number(env.LLM_REWRITE_TOKENS || 300),
+        response_format: { type: 'json_object' }
       })
     });
-    if (!up.ok) return question;
+    if (!up.ok) return { query: question, project: '' };
     const d = await up.json();
-    let q = (d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
-    q = q.trim().replace(/^[「"'“‘]+|[」"'”’]+$/g, '').replace(/^(查询|改写|检索查询)[:：]\s*/, '').split('\n')[0].trim();
-    return (q && q.length >= 2 && q.length <= 80) ? q : question;
-  } catch (e) { return question; }
+    const raw = (d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    let q = raw, proj = '';
+    try {
+      const j = JSON.parse(raw);
+      q = String(j.query || '');
+      proj = String(j.project || '').trim();
+    } catch (e) {
+      q = raw.split('\n')[0];
+    }
+    q = q.trim().replace(/^[「"'“‘]+|[」"'”’]+$/g, '').replace(/^(查询|改写|检索查询)[:：]\s*/, '').trim();
+    if (proj === '空' || proj === '无' || proj === 'null') proj = '';
+    return { query: (q && q.length >= 2 && q.length <= 80) ? q : question, project: (proj.length <= 30 ? proj : '') };
+  } catch (e) { return { query: question, project: '' }; }
 }
 
 /* ── 知识库检索：把项目文档切片查出来，作为回答依据（真 RAG 的 R 部分）── */
@@ -125,19 +140,21 @@ function kbTerms(q) {
   const ok = t => t.length >= 2 && !STOP.test(t) && !/^[0-9]+$/.test(t);
   return [...[...whole].filter(ok), ...[...bi].filter(ok), ...[...tri].filter(ok)].slice(0, 12);
 }
-async function searchKB(env, question, limit) {
+async function searchKB(env, question, limit, projectHint) {
   const tlist = kbTerms(question);
   if (!tlist.length) return [];
   const out = [];
+  const projCond = projectHint ? ' AND c.project_name LIKE ?' : '';
+  const projBind = projectHint ? '%' + projectHint + '%' : null;
   const tri = tlist.filter(t => t.length >= 3);
   if (tri.length) {
     try {
       const fts = tri.map(t => '"' + t.replace(/"/g, '""') + '"').join(' OR ');
-      const r = await env.DB.prepare(
-        'SELECT c.project_name, c.doc_title, c.section_path, c.facet, c.title, c.text ' +
-        'FROM kb_chunks_fts f JOIN kb_chunks c ON c.id = f.rowid WHERE kb_chunks_fts MATCH ? ' +
-        'ORDER BY bm25(kb_chunks_fts, 6.0, 1.0, 3.0, 2.0, 2.0) LIMIT ?'
-      ).bind(fts, limit).all();
+      const sql = 'SELECT c.project_name, c.doc_title, c.section_path, c.facet, c.title, c.text ' +
+        'FROM kb_chunks_fts f JOIN kb_chunks c ON c.id = f.rowid WHERE kb_chunks_fts MATCH ?' + projCond +
+        ' ORDER BY bm25(kb_chunks_fts, 6.0, 1.0, 3.0, 2.0, 2.0) LIMIT ?';
+      const binds = projBind ? [fts, projBind, limit] : [fts, limit];
+      const r = await env.DB.prepare(sql).bind(...binds).all();
       for (const x of (r.results || [])) out.push(x);
     } catch (e) { /* 忽略 */ }
   }
@@ -146,12 +163,12 @@ async function searchKB(env, question, limit) {
     const conds = words.map(() => '(title LIKE ? OR text LIKE ?)').join(' OR ');
     const binds = [];
     words.forEach(w => binds.push(w, w));
-    binds.push(limit - out.length);
+    let likeSql = 'SELECT project_name, doc_title, section_path, facet, title, text FROM kb_chunks WHERE (' + conds + ')';
+    if (projectHint) { likeSql += ' AND project_name LIKE ?'; binds.push('%' + projectHint + '%'); }
+    likeSql += ' ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END) LIMIT ?';
+    binds.push('%' + question + '%', limit - out.length);
     try {
-      const r2 = await env.DB.prepare(
-        'SELECT project_name, doc_title, section_path, facet, title, text FROM kb_chunks WHERE (' + conds + ') ' +
-        'ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END) LIMIT ?'
-      ).bind(...(binds.slice(0, -1)), '%' + question + '%', binds[binds.length - 1]).all();
+      const r2 = await env.DB.prepare(likeSql).bind(...binds).all();
       for (const x of (r2.results || [])) {
         if (!out.some(function (y) { return y.title === x.title && y.text === x.text; })) out.push(x);
       }
@@ -172,19 +189,43 @@ export async function onRequestPost({ request, env }) {
 
   // ① 先做查询改写：把「上一轮回答 + 新问题」改成独立查询（用户说的「它/这个」会被还原）
   const lastReply = clean(body.lastReply, 1500);
-  let searchQuery = question;
-  try { searchQuery = await rewriteQuery(env, question, lastReply); } catch (e) { searchQuery = question; }
+  let searchQuery = question, projectHint = '';
+  try {
+    const rw = await rewriteQuery(env, question, lastReply);
+    searchQuery = rw.query || question;
+    projectHint = rw.project || '';
+  } catch (e) { searchQuery = question; }
 
-  // ② 用改写后的查询检索知识库；若命中不足，再用原问题补一次
+  // ② 检索：**优先在判定出的项目内检索**（避免「创意/想法」这类通用词把别的项目串进来）
   let kbBlock = '', kbHitCount = 0;
   try {
-    let hits = await searchKB(env, searchQuery, 8);
-    if (hits.length < 4 && searchQuery !== question) {
-      const more = await searchKB(env, question, 8 - hits.length);
+    let hits = projectHint ? await searchKB(env, searchQuery, 8, projectHint) : await searchKB(env, searchQuery, 8);
+
+    if (projectHint) {
+      // ★ 锁定项目时【绝不跨项目补检索】——这是之前「问 ProListing 却答真菌星域」的根源：
+      //   「创意/想法/灵感」这类通用词在别的项目资料里往往更抢眼，一旦补进来模型就被带走。
+      //   改为：不足时**在同一个项目内用原问题再搜一次**（换查询、不换项目）。
+      if (hits.length < 8) {
+        const more = await searchKB(env, question, 8 - hits.length, projectHint);
+        for (const x of more) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
+      }
+    } else if (hits.length < 8) {
+      // 没有项目锁定（泛问）时才允许全库补足
+      const more = await searchKB(env, searchQuery, 8 - hits.length);
       for (const x of more) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
+    }
+    // 项目判定失效时的最后兜底（仅当项目内一条都没有）
+    if (projectHint && !hits.length) {
+      const more = await searchKB(env, searchQuery, 6);
+      for (const x of more) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
+    }
+    if (hits.length < 4 && searchQuery !== question) {
+      const more2 = await searchKB(env, question, 8 - hits.length);
+      for (const x of more2) { if (!hits.some(function (y) { return y.title === x.title && y.text === x.text; })) hits.push(x); }
     }
     if (hits.length) {
       kbHitCount = hits.length;
+      if (projectHint) kbBlock += '\n（注意：以上切片均来自「' + projectHint + '」这个项目，请只依据它们回答。）';
       kbBlock = '\n\n【项目文档原文切片（检索自知识库，共 ' + hits.length + ' 条，请优先依据这些细节回答）】\n' +
         hits.map(function (h, i) {
           return (i + 1) + '. 【' + (h.project_name || '') + ' · ' + (h.doc_title || '') +
@@ -203,7 +244,7 @@ export async function onRequestPost({ request, env }) {
   const base = (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
 
   // 调用一次模型并解析出 JSON（失败或空返回时由调用方重试）
-  async function callOnce(withHistory) {
+  async function callOnce(withHistory, modelOverride) {
     const msgs = [{ role: 'system', content: SYSTEM }]
       .concat(withHistory ? history : [])
       .concat([{ role: 'user', content: user }]);
@@ -213,10 +254,10 @@ export async function onRequestPost({ request, env }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + env.DEEPSEEK_API_KEY },
         body: JSON.stringify({
-          model: env.LLM_MODEL || 'deepseek-chat',
+          model: modelOverride || env.LLM_MODEL || 'deepseek-chat',
           messages: msgs,
           temperature: 0.4,
-          max_tokens: Number(env.LLM_MAX_TOKENS || 2400),
+          max_tokens: Number(env.LLM_MAX_TOKENS || 3000),
           response_format: { type: 'json_object' }
         })
       });
@@ -234,7 +275,9 @@ export async function onRequestPost({ request, env }) {
       const m = text.match(/\{[\s\S]*\}/);
       if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} }
     }
-    return { parsed: parsed, text: text };
+    const finish = (d && d.choices && d.choices[0] && d.choices[0].finish_reason) || '';
+    const reasoning = ((d && d.usage && d.usage.completion_tokens_details) || {}).reasoning_tokens || 0;
+    return { parsed: parsed, text: text, finish: finish, reasoning: reasoning };
   }
 
   // 第一次：带历史
@@ -252,12 +295,22 @@ export async function onRequestPost({ request, env }) {
     }
   }
 
-  // 兜底 2：仍然为空 → 给一句得体的回退，而不是把空白丢给用户
+  // 兜底 2：仍为空（多半是思考模式把额度耗在推理上）→ **换回非思考模式**再试一次，必定有回答
+  let usedFallbackModel = false;
+  if (!parsed || typeof parsed.reply !== 'string' || !parsed.reply.trim()) {
+    const fast = await callOnce(false, 'deepseek-chat');
+    if (!fast.err && fast.parsed && typeof fast.parsed.reply === 'string' && fast.parsed.reply.trim()) {
+      parsed = fast.parsed; usedFallbackModel = true;
+    }
+  }
+
+  // 兜底 3：极端情况（上游异常等）→ 给一句有用的话，并附推荐问题
   if (!parsed || typeof parsed.reply !== 'string' || !parsed.reply.trim()) {
     return json({
-      reply: '抱歉，我刚才没组织好语言。你可以换个说法再问一次；也可以直接说「打开 <项目名>」或「切到 <分类>」，我会帮你执行。',
+      reply: '这条我一时没答上来（可能是问题太长或太绕）。你可以换个说法，或者点下面的问题让我带你去看具体项目。',
       action: null,
-      followups: ['有据是什么？', '有哪些能直接玩的？', '哪个项目最能体现数据分析？']
+      followups: ['有据是什么？', '有哪些能直接玩的？', '哪个项目最能体现数据分析？'],
+      _debug: { fallback: 'empty_reply', searchQuery: searchQuery, kbHits: (typeof kbHitCount === 'number' ? kbHitCount : 0) }
     });
   }
 
@@ -267,6 +320,11 @@ export async function onRequestPost({ request, env }) {
     action: parsed.action && parsed.action.type ? parsed.action : null,
     followups: fu,
     // 调试信息（前端不使用）：这次把问题改写成了什么、检索命中几条
-    _debug: { searchQuery: searchQuery, rewritten: searchQuery !== question, kbHits: (typeof kbHitCount === 'number' ? kbHitCount : 0) }
+    _debug: {
+      searchQuery: searchQuery, projectHint: projectHint, rewritten: searchQuery !== question,
+      kbHits: (typeof kbHitCount === 'number' ? kbHitCount : 0),
+      model: usedFallbackModel ? 'deepseek-chat(兜底)' : (env.LLM_MODEL || 'deepseek-chat'),
+      finish: (res.finish || ''), reasoningTokens: (res.reasoning || 0)
+    }
   });
 }
