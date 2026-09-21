@@ -25,7 +25,8 @@ const SYSTEM = [
   '  {"type":"locate","target":"portfolio|about|docs|top"}  定位到页面区块（作品集/关于我/文档库/顶部）',
   '  {"type":"close"}                              关闭对话弹窗',
   '只有当用户明确想「看 / 打开 / 找 / 带我去 / 关掉」时才给 action；纯介绍性的问题 action 必须为 null。',
-  '只输出 JSON 对象，形如：{"reply":"回答正文","action":null 或 {"type":"...","target":"..."}}'
+  '【预测追问】回答之后，再基于你这次说的内容，预测用户接下来最可能想了解什么，给 2~3 条简短追问（每条 8~18 个字，口语化，可直接点着问，不要编号、不要问号以外的标点）。',
+  '只输出 JSON 对象，形如：{"reply":"回答正文","action":null 或 {"type":"...","target":"..."},"followups":["追问1","追问2"]}'
 ].join('\n');
 
 export async function onRequestPost({ request, env }) {
@@ -69,6 +70,7 @@ export async function onRequestPost({ request, env }) {
     const m = text.match(/\{[\s\S]*\}/);
     if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} }
   }
-  if (!parsed || typeof parsed.reply !== 'string') return json({ reply: text || '（模型没有返回内容）', action: null });
-  return json({ reply: parsed.reply, action: parsed.action && parsed.action.type ? parsed.action : null });
+  if (!parsed || typeof parsed.reply !== 'string') return json({ reply: text || '（模型没有返回内容）', action: null, followups: [] });
+  var fu = Array.isArray(parsed.followups) ? parsed.followups.filter(function (x) { return typeof x === 'string' && x.trim(); }).slice(0, 3) : [];
+  return json({ reply: parsed.reply, action: parsed.action && parsed.action.type ? parsed.action : null, followups: fu });
 }
