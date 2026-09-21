@@ -106,7 +106,8 @@ async function rewriteQuery(env, question, lastReply) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + env.DEEPSEEK_API_KEY },
       body: JSON.stringify({
-        model: env.LLM_MODEL || 'deepseek-chat',
+        // ★ 改写同样是辅助生成：用非思考模式，快且不会被推理吃光额度
+        model: env.LLM_MODEL_FAST || 'deepseek-chat',
         messages: [
           { role: 'system', content: REWRITE_SYSTEM },
           { role: 'user', content: '上一轮助手的回答：\n' + String(lastReply).slice(0, 600) + '\n\n用户的新问题：' + question }

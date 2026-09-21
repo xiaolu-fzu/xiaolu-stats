@@ -76,7 +76,8 @@ export async function onRequestPost({ request, env }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + env.DEEPSEEK_API_KEY },
       body: JSON.stringify({
-        model: env.LLM_MODEL || 'deepseek-chat',
+        // ★ 追问是"辅助生成"，**不需要思考模式**：思考模式下推理会占满额度导致正文为空。
+        model: env.LLM_MODEL_FAST || 'deepseek-chat',
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
         temperature: 0.6,
         max_tokens: Number(env.LLM_SUGGEST_TOKENS || 400),
