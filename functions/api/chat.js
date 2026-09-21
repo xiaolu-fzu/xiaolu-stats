@@ -15,6 +15,7 @@ export async function onRequestOptions() { return noContent(); }
 const SYSTEM = [
   '你是「小洄」，李嘉豪个人作品集网站的 AI 助手。性格亲切、说话自然，像真人助手（不要机械罗列、不要客服腔）。',
   '只依据下面给出的项目资料回答，绝对不要编造资料里没有的项目、数字或链接；资料里没有的就直说不知道。',
+  '【知识库优先｜重要】资料里若出现「项目文档原文切片」，那是从项目文档里检索出来的原文，**比卡片简介更权威更细**——请优先依据它回答；必要时可以说出来源（如「这一点出自《有据_技术方案与决策记录》的检索策略一节」）。',
   '【数量与清单｜重要】资料开头有「【项目总览】」，里面写了作品集的**项目总数、各分类数量、完整项目清单**（后方还附了与本次问题最相关的项目详情）。',
   '凡是问「一共有多少项目 / 有哪些分类 / 都做过什么 / 列一下全部」这类问题，**一律以【项目总览】为准**去数、去列举，不要只用后面那几条相关详情来回答，更不要说「我只知道几个」。',
   '【接着聊】下面会给出最近几轮对话，请顺着上下文回答：用户说「这两个 / 它们 / 那几个 / 刚才说的」时，指的就是你上一轮列举过的项目，直接按这个理解回答，不要反问用户「你指哪两个」。',
@@ -72,6 +73,54 @@ const SYSTEM = [
   'followups 要求：2~3 条，每条 8~18 个字，口语化，可直接点着问，不要编号。'
 ].join('\n');
 
+/* ── 知识库检索：把项目文档切片查出来，作为回答依据（真 RAG 的 R 部分）── */
+const STOP = /^(为什么|什么|怎么|怎样|哪些|哪个|如何|可以|是否|这个|那个|以及|还是|不用|只用|我们|你们|他们|一个|一下|就是|不是|用了|有过|做过|关于|介绍)$/;
+function kbTerms(q) {
+  const whole = new Set(), bi = new Set(), tri = new Set();
+  const parts = String(q).split(/[\s,，。.？?！!、；;：:（）()【】「」《》"'\-—_\/\\|]+/).filter(Boolean);
+  for (const x of parts) {
+    if (x.length <= 8) whole.add(x);
+    for (let i = 0; i + 2 <= x.length; i++) bi.add(x.slice(i, i + 2));
+    for (let i = 0; i + 3 <= x.length; i++) tri.add(x.slice(i, i + 3));
+  }
+  const ok = t => t.length >= 2 && !STOP.test(t) && !/^[0-9]+$/.test(t);
+  return [...[...whole].filter(ok), ...[...bi].filter(ok), ...[...tri].filter(ok)].slice(0, 12);
+}
+async function searchKB(env, question, limit) {
+  const tlist = kbTerms(question);
+  if (!tlist.length) return [];
+  const out = [];
+  const tri = tlist.filter(t => t.length >= 3);
+  if (tri.length) {
+    try {
+      const fts = tri.map(t => '"' + t.replace(/"/g, '""') + '"').join(' OR ');
+      const r = await env.DB.prepare(
+        'SELECT c.project_name, c.doc_title, c.section_path, c.facet, c.title, c.text ' +
+        'FROM kb_chunks_fts f JOIN kb_chunks c ON c.id = f.rowid WHERE kb_chunks_fts MATCH ? ' +
+        'ORDER BY bm25(kb_chunks_fts, 6.0, 1.0, 3.0, 2.0, 2.0) LIMIT ?'
+      ).bind(fts, limit).all();
+      for (const x of (r.results || [])) out.push(x);
+    } catch (e) { /* 忽略 */ }
+  }
+  if (out.length < limit) {
+    const words = tlist.map(t => '%' + t + '%');
+    const conds = words.map(() => '(title LIKE ? OR text LIKE ?)').join(' OR ');
+    const binds = [];
+    words.forEach(w => binds.push(w, w));
+    binds.push(limit - out.length);
+    try {
+      const r2 = await env.DB.prepare(
+        'SELECT project_name, doc_title, section_path, facet, title, text FROM kb_chunks WHERE (' + conds + ') ' +
+        'ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END) LIMIT ?'
+      ).bind(...(binds.slice(0, -1)), '%' + question + '%', binds[binds.length - 1]).all();
+      for (const x of (r2.results || [])) {
+        if (!out.some(function (y) { return y.title === x.title && y.text === x.text; })) out.push(x);
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+  return out.slice(0, limit);
+}
+
 export async function onRequestPost({ request, env }) {
   if (!env.DEEPSEEK_API_KEY) return json({ error: '服务端未配置 API Key' }, 503);
 
@@ -82,7 +131,20 @@ export async function onRequestPost({ request, env }) {
   const context = clean(body.context, 12000);
   if (!question) return json({ error: '问题不能为空' }, 400);
 
-  const user = '项目资料：\n' + (context || '（暂无可参考资料）') + '\n\n用户问题：' + question;
+  // 先查知识库：命中就作为「文档原文依据」附在卡片资料后面
+  let kbBlock = '';
+  try {
+    const hits = await searchKB(env, question, 8);
+    if (hits.length) {
+      kbBlock = '\n\n【项目文档原文切片（检索自知识库，共 ' + hits.length + ' 条，请优先依据这些细节回答）】\n' +
+        hits.map(function (h, i) {
+          return (i + 1) + '. 【' + (h.project_name || '') + ' · ' + (h.doc_title || '') +
+            (h.section_path ? ' · ' + h.section_path : '') + '（' + (h.facet || '') + '）】\n' + h.text;
+        }).join('\n\n');
+    }
+  } catch (e) { /* 知识库不可用时静默降级为只卡片资料 */ }
+
+  const user = '项目资料：\n' + (context || '（暂无可参考资料）') + kbBlock + '\n\n用户问题：' + question;
   // 最近几轮对话（让模型能接住「这两个」「它们」这类指代）
   const history = Array.isArray(body.history) ? body.history
     .filter(function (h) { return h && typeof h.content === 'string' && h.content.trim(); })
