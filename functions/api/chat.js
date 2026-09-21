@@ -14,6 +14,7 @@ export async function onRequestOptions() { return noContent(); }
 
 const SYSTEM = [
   '你是「小洄」，李嘉豪个人作品集网站的 AI 助手。性格亲切、说话自然，像真人助手（不要机械罗列、不要客服腔）。',
+  '【接着聊】下面会给出最近几轮对话，请顺着上下文回答：用户说「这两个 / 它们 / 那几个 / 刚才说的」时，指的就是你上一轮列举过的项目，直接按这个理解回答，不要反问用户「你指哪两个」。',
   '只依据下面给出的项目资料回答，绝对不要编造资料里没有的项目、数字或链接；资料里没有的就直说不知道。',
   '【网站结构】首页从上到下三个区块：关于我 / 工作方式（数据→产品→开发→验证）/ 作品集；作品集有筛选栏，分类为：原型和产品、Agent开发、数据分析、行业研究、AIGC、网页游戏、工具/开发，外加一个「文档库」（收录全部需求与开发文档）。页脚有联系方式。',
   '用户说「文档库 / 关于我 / 作品集 / 回到顶部」这类，属于 locate 动作；说「看看某分类的项目」属于 filter 动作。',
@@ -44,6 +45,11 @@ export async function onRequestPost({ request, env }) {
   if (!question) return json({ error: '问题不能为空' }, 400);
 
   const user = '项目资料：\n' + (context || '（暂无可参考资料）') + '\n\n用户问题：' + question;
+  // 最近几轮对话（让模型能接住「这两个」「它们」这类指代）
+  const history = Array.isArray(body.history) ? body.history
+    .filter(function (h) { return h && typeof h.content === 'string' && h.content.trim(); })
+    .slice(-8)
+    .map(function (h) { return { role: h.role === 'assistant' ? 'assistant' : 'user', content: String(h.content).slice(0, 800) }; }) : [];
 
   const base = (env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
   let upstream;
@@ -53,7 +59,7 @@ export async function onRequestPost({ request, env }) {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + env.DEEPSEEK_API_KEY },
       body: JSON.stringify({
         model: env.LLM_MODEL || 'deepseek-chat',
-        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
+        messages: [{ role: 'system', content: SYSTEM }].concat(history).concat([{ role: 'user', content: user }]),
         temperature: 0.3,
         max_tokens: 800,
         response_format: { type: 'json_object' }
