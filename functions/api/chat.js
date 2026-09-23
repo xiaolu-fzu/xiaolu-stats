@@ -147,7 +147,32 @@ function kbTerms(q) {
   const ok = t => t.length >= 2 && !STOP.test(t) && !/^[0-9]+$/.test(t);
   return [...[...whole].filter(ok), ...[...bi].filter(ok), ...[...tri].filter(ok)].slice(0, 12);
 }
+/* 项目名可能有多种写法（书名号、中点字符、中英混排），前端传的名字与库里存的未必逐字一致。
+   生成一串「由严到宽」的候选，逐个试检索，命中即用 —— 解决「明明有资料却 0 命中」。 */
+function projKeys(hint) {
+  if (!hint) return [null];
+  const out = [String(hint)];
+  const stripped = String(hint).replace(/[《》〈〉「」【】（）()·・•‧\s]+/g, " ").trim();
+  if (stripped && stripped !== hint) out.push(stripped);
+  (String(hint).match(/[\u4e00-\u9fa5]{2,}/g) || []).forEach(function (s) { out.push(s); });
+  stripped.split(/\s+/).filter(function (s) { return s.length >= 2; }).forEach(function (s) { out.push(s); });
+  const seen = {};
+  return out.filter(function (s) { return s && s.length >= 2 && !seen[s] && (seen[s] = 1); });
+}
+
 async function searchKB(env, question, limit, projectHint) {
+  if (projectHint) {
+    const keys = projKeys(projectHint);
+    for (let i = 0; i < keys.length; i++) {
+      const r = await searchKBOnce(env, question, limit, keys[i]);
+      if (r.length) return r;                      // 命中即停（从最严格的名字开始试）
+    }
+    return [];
+  }
+  return searchKBOnce(env, question, limit, null);
+}
+
+async function searchKBOnce(env, question, limit, projectHint) {
   const tlist = kbTerms(question);
   if (!tlist.length) return [];
   const out = [];
