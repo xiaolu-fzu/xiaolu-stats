@@ -6,7 +6,7 @@
  *   2. 命中不足时用 LIKE 兜底——中文短查询（如 2 字「有据」）trigram 匹配不到。
  * 返回：{ query, count, results: [{ id, project, project_name, doc, doc_type, section, facet, title, text, keywords, score }] }
  */
-import { json, noContent, clean } from './_lib.js';
+import { json, noContent, clean, likeSafe } from './_lib.js';
 
 export async function onRequestOptions() { return noContent(); }
 
@@ -59,16 +59,33 @@ export async function onRequestGet({ request, env }) {
 
   // ② LIKE 兜底：任一分词命中即可（覆盖 2 字短词与 FTS 无结果的情况）
   if (rows.length < limit) {
-    const words = (tlist.length ? tlist : [q]).map(t => '%' + t + '%');
-    const conds = words.map(() => '(title LIKE ? OR text LIKE ? OR keywords LIKE ?)').join(' OR ');
+    /* tlist 里的词都是 2–3 字（安全）；但 tlist 为空时会拿整句 q 去 LIKE，
+       长查询同样会触发 50 字节上限 —— 所以那一支改走 likeSafe()。 */
+    const useRaw = !tlist.length;
+    const rawSafe = useRaw ? likeSafe('title', q) : null;
+    const rawCond = useRaw
+      ? '(' + rawSafe.cond + ' OR ' + likeSafe('text', q).cond + ' OR ' + likeSafe('keywords', q).cond + ')'
+      : '';
+    const words = (useRaw ? [] : tlist).map(t => '%' + t + '%');
+    const conds = words.length
+      ? words.map(() => '(title LIKE ? OR text LIKE ? OR keywords LIKE ?)').join(' OR ')
+      : rawCond;
     let sql = 'SELECT id, project_id, project_name, doc_title, doc_type, section_path, facet, title, text, keywords, 0 AS score ' +
               'FROM kb_chunks WHERE (' + conds + ')';
     const binds = [];
     words.forEach(w => { binds.push(w, w, w); });
+    if (useRaw) {
+      binds.push(rawSafe.bind, likeSafe('text', q).bind, likeSafe('keywords', q).bind);
+      if (!conds) { /* 理论上不会发生 */ }
+    }
     if (project) { sql += ' AND project_id = ?'; binds.push(project); }
     if (facet) { sql += ' AND facet = ?'; binds.push(facet); }
-    sql += ' ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END), id LIMIT ?';
-    binds.push('%' + q + '%', limit - rows.length);
+    /* ★ 2026-10-08 修复：与 chat.js 原来那个 bug 完全同类 ——
+       ORDER BY 里用 title LIKE '%整句%' 做微调，而 D1 的 LIKE pattern 上限 50 字节，
+       查询超过 16 个汉字就报 "LIKE or GLOB pattern too complex"，
+       整条兜底语句失败、被下方 catch 吞掉 → 长查询安静地返回 0 条。改用 instr()。 */
+    sql += ' ORDER BY (CASE WHEN instr(title, ?) > 0 THEN 0 ELSE 1 END), id LIMIT ?';
+    binds.push(q, limit - rows.length);
     try {
       const r2 = await db.prepare(sql).bind(...binds).all();
       for (const row of (r2.results || [])) {

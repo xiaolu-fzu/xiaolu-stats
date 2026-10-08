@@ -8,7 +8,7 @@
  *
  * 服务器完全不懂业务：检索在前端完成，这里只是带钥匙的转发器 + 一个约束输出格式的提示词。
  */
-import { json, noContent, clean } from './_lib.js';
+import { json, noContent, clean, likeSafe } from './_lib.js';
 
 /* ── 查询改写（Query Rewriting）：把「上一轮回答 + 用户新问题」改写成独立完整的检索查询 ──
    目的：用户常说「它」「这个」「上面说的」，直接拿去检索必然失焦；先还原指代再检索。 */
@@ -211,8 +211,14 @@ async function searchKBOnce(env, question, limit, projectHint) {
   const tlist = kbTerms(question);
   if (!tlist.length) return [];
   const out = [];
-  const projCond = projectHint ? ' AND c.project_name LIKE ?' : '';
-  const projBind = projectHint ? '%' + projectHint + '%' : null;
+  /* ★ 2026-10-08 修复：这里原来用 c.project_name LIKE '%全名%'，
+     而 D1 的 LIKE pattern 上限 50 字节 —— 项目名超 16 个汉字即报错
+     （「《三体》·角色扮演 RAG · 短期记忆对话」= 59 字节），
+     于是整个 FTS 分支抛异常、被下方 catch 吞掉、安静地返回 0 条。
+     改用 likeSafe()：长名字走 instr()。 */
+  const projSafe = projectHint ? likeSafe('c.project_name', projectHint) : null;
+  const projCond = projSafe ? ' AND ' + projSafe.cond : '';
+  const projBind = projSafe ? projSafe.bind : null;
   const tri = tlist.filter(t => t.length >= 3);
   /* 检索策略：**宽召回 + 实词重排**
      教训：曾经试过用 AND 组合长词来提高精度，但中文 3-gram 里混着大量噪声片段（"循环是""是什"），
@@ -253,7 +259,7 @@ async function searchKBOnce(env, question, limit, projectHint) {
     const binds = [];
     words.forEach(w => binds.push(w, w));
     let likeSql = 'SELECT project_name, doc_title, section_path, facet, title, text FROM kb_chunks WHERE (' + conds + ')';
-    if (projectHint) { likeSql += ' AND project_name LIKE ?'; binds.push('%' + projectHint + '%'); }
+    if (projectHint) { const c = likeSafe('project_name', projectHint); likeSql += ' AND ' + c.cond; binds.push(c.bind); }
     /* ★ 2026-10-08 修复：原来这里用 title LIKE '%<整句>%' 做「整句匹配排前」的微调，
        但 WHERE 里已经有最多 24 个 LIKE，再叠一个会把**整个语句**打空：
        实测同一 SQL 连跑 4 次稳定返回 0 行；另一次直接报 "LIKE or GLOB pattern too complex"。
