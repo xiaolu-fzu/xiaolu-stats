@@ -163,7 +163,18 @@ function kbTerms(q) {
      现在给 3-gram 保底 4 个名额（2-gram 相应让位），整词仍最优先。 */
   const wholeL = [...whole].filter(ok);
   const biL = [...bi].filter(ok);
-  const triL = [...tri].filter(ok);
+  /* ★ 2026-10-08 修复（第三处）：保底名额只是"给了"，但取的是**最前面**的 3-gram，
+     而改写会把项目名/游戏名前缀加进查询，前面全是废片段。实测：
+       「维京之王（Vikingard）的双循环具体是怎么跑起来的」
+         → 原序取到：维京之王 维京之 京之王 Vik iki    ← 有用的「双循环」排在第 5 位开外
+         → 实词优先后：维京之王 双循环 循环具 环具体 怎么跑  ✔
+     排序规则：含**虚词**（的/了/是/在/和/之…）或**拉丁/数字片段**的 3-gram 往后排。
+     理由：前者是跨词片段（中文 3-gram 的老问题），后者只能匹配到"所有提到该名字的切片"
+     —— 那正是"泛切片占满名额、真正相关的那条反而落选"的来源。 */
+  const FUNC_CH = /[的了是在和与之我你他她它吗呢吧啊就也都很难会能要有这那些个把被给对从到并且而或但]/;
+  const ASCII_CH = /[A-Za-z0-9]/;
+  const triRank = t => (ASCII_CH.test(t) || FUNC_CH.test(t)) ? 1 : 0;
+  const triL = [...tri].filter(ok).sort((a, b) => triRank(a) - triRank(b));
   const triTake = Math.min(triL.length, Math.max(4, 12 - wholeL.length - biL.length));
   const biTake = Math.min(biL.length, Math.max(0, 12 - wholeL.length - triTake));
   const list = [...wholeL, ...triL.slice(0, triTake), ...biL.slice(0, biTake)];
