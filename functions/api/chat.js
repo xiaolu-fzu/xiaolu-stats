@@ -179,16 +179,38 @@ async function searchKBOnce(env, question, limit, projectHint) {
   const projCond = projectHint ? ' AND c.project_name LIKE ?' : '';
   const projBind = projectHint ? '%' + projectHint + '%' : null;
   const tri = tlist.filter(t => t.length >= 3);
+  /* 检索策略：**宽召回 + 实词重排**
+     教训：曾经试过用 AND 组合长词来提高精度，但中文 3-gram 里混着大量噪声片段（"循环是""是什"），
+     AND 必然 0 命中，退回 OR 后又变成"谁都能命中"，导致问「核心循环」和问「时间墙」召回同一批泛切片。
+     现在改为：OR 宽召回（limit 放大）→ 再按**实词命中数**重排，只把真正相关的排前面。 */
   if (tri.length) {
     try {
       const fts = tri.map(t => '"' + t.replace(/"/g, '""') + '"').join(' OR ');
       const sql = 'SELECT c.project_name, c.doc_title, c.section_path, c.facet, c.title, c.text ' +
         'FROM kb_chunks_fts f JOIN kb_chunks c ON c.id = f.rowid WHERE kb_chunks_fts MATCH ?' + projCond +
-        ' ORDER BY bm25(kb_chunks_fts, 6.0, 1.0, 3.0, 2.0, 2.0) LIMIT ?';
-      const binds = projBind ? [fts, projBind, limit] : [fts, limit];
+        ' ORDER BY bm25(kb_chunks_fts, 8.0, 1.0, 3.0, 2.0, 1.5) LIMIT ?';
+      const binds = projBind ? [fts, projBind, Math.max(20, limit * 3)] : [fts, Math.max(20, limit * 3)];
       const r = await env.DB.prepare(sql).bind(...binds).all();
       for (const x of (r.results || [])) out.push(x);
     } catch (e) { /* 忽略 */ }
+  }
+
+  /* 实词重排：只保留「2 字词 / 4 字以上长词」作为判分依据（3-gram 多为噪声，不计分） */
+  if (out.length > limit) {
+    const keys = [...new Set(tlist.filter(t => t.length === 2 || t.length >= 4))];
+    if (keys.length) {
+      const score = function (row) {
+        const t = (row.title || ''), b = (row.text || '');
+        let s = 0;
+        keys.forEach(function (k) {
+          if (t.indexOf(k) >= 0) s += 6;                       // 标题命中权重高
+          const n = b.split(k).length - 1;
+          if (n) s += Math.min(n, 3);                          // 正文命中，最多计 3 次
+        });
+        return s;
+      };
+      out.sort(function (a, b) { return score(b) - score(a); });
+    }
   }
   if (out.length < limit) {
     const words = tlist.map(t => '%' + t + '%');
@@ -258,7 +280,7 @@ export async function onRequestPost({ request, env }) {
   }
 
   // ② 检索：**优先在判定出的项目内检索**（避免「创意/想法」这类通用词把别的项目串进来）
-  let kbBlock = '', kbHitCount = 0;
+  let kbBlock = '', kbHitCount = 0, kbHitTitles = [];
   try {
     let hits = projectHint ? await searchKB(env, searchQuery, 8, projectHint) : await searchKB(env, searchQuery, 8);
 
@@ -284,16 +306,21 @@ export async function onRequestPost({ request, env }) {
     }
     if (hits.length) {
       kbHitCount = hits.length;
-      if (projectHint) kbBlock += '\n（注意：以上切片均来自「' + projectHint + '」这个项目，请只依据它们回答。）';
-    } else if (projectHint) {
-      kbBlock = '\n\n【知识库提示】当前讨论的项目是「' + projectHint + '」，但知识库里**没有**这个项目的文档切片。' +
-        '因此你**只能依据上面的卡片资料**回答；卡片里也没有的细节，就直接说「这个项目的这部分细节我手头没有，' +
-        '它的需求文档/开发文档里可能有」——**绝对不要拿别的项目的内容来回答**。';
+      kbHitTitles = hits.slice(0, 8).map(function (h) { return (h.title || '').slice(0, 30) + ' [' + (h.facet || '') + ']'; });
+      /* ★ 2026-10-08 修复：装载切片正文的这段原本被误放在下面的 else-if 分支里，
+         导致「命中切片」时 kbBlock 只剩一句来源说明、**切片正文从未进入提示词**——
+         小洄因此永远只能拿卡片简介回答，对细节问题一律说「资料里没写」。
+         现在把它放回命中分支，来源说明句在其后追加。 */
       kbBlock = '\n\n【项目文档原文切片（检索自知识库，共 ' + hits.length + ' 条，请优先依据这些细节回答）】\n' +
         hits.map(function (h, i) {
           return (i + 1) + '. 【' + (h.project_name || '') + ' · ' + (h.doc_title || '') +
             (h.section_path ? ' · ' + h.section_path : '') + '（' + (h.facet || '') + '）】\n' + h.text;
         }).join('\n\n');
+      if (projectHint) kbBlock += '\n（注意：以上切片均来自「' + projectHint + '」这个项目，请只依据它们回答。）';
+    } else if (projectHint) {
+      kbBlock = '\n\n【知识库提示】当前讨论的项目是「' + projectHint + '」，但知识库里**没有**这个项目的文档切片。' +
+        '因此你**只能依据上面的卡片资料**回答；卡片里也没有的细节，就直接说「这个项目的这部分细节我手头没有，' +
+        '它的需求文档/开发文档里可能有」——**绝对不要拿别的项目的内容来回答**。';
     }
   } catch (e) { /* 知识库不可用时静默降级为只卡片资料 */ }
 
@@ -386,6 +413,7 @@ export async function onRequestPost({ request, env }) {
     _debug: {
       searchQuery: searchQuery, projectHint: projectHint, clientProject: clientProject, rewritten: searchQuery !== question,
       kbHits: (typeof kbHitCount === 'number' ? kbHitCount : 0),
+      hitTitles: (typeof kbHitTitles !== 'undefined' ? kbHitTitles : []),
       model: usedFallbackModel ? 'deepseek-chat(兜底)' : (env.LLM_MODEL || 'deepseek-chat'),
       finish: (res.finish || ''), reasoningTokens: (res.reasoning || 0)
     }
