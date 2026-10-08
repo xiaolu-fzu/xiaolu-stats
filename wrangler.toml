@@ -8,5 +8,13 @@ binding = "DB"
 database_name = "xiaolu-stats"
 database_id = "35063907-ec26-483b-877e-607b6cb1df63"
 
+# Workers AI 绑定 —— 混合检索用它做「查询嵌入」（bge-m3）。
+# ⚠️ 必须写在这里！2026-10-08 实测教训：只在控制台/API 里加绑定是没用的，
+#    `wrangler pages deploy` 会用本文件**覆盖项目的绑定配置**，把控制台里加的抹掉。
+#    （代码对缺失是容错的：没有 AI 绑定就静默退回纯 FTS，所以当时表现为
+#      「混合检索在生产上只到 75%，测试项目却是 89%」——根因就是这里。）
+[ai]
+binding = "AI"
+
 # 统计密钥用加密环境变量，不要写在这里：
 #   npx wrangler pages secret put STATS_TOKEN --project-name xiaolu-stats
