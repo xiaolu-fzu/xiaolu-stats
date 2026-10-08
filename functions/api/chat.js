@@ -351,7 +351,10 @@ async function searchKBOnce(env, question, limit, projectHint) {
   if (tri.length) {
     try {
       const fts = tri.map(t => '"' + t.replace(/"/g, '""') + '"').join(' OR ');
-      const sql = 'SELECT c.project_name, c.doc_title, c.section_path, c.facet, c.title, c.text ' +
+      /* ⚠️ 必须带 c.id：RRF 融合要按 id 对齐两个召回列表。
+         漏掉它会导致所有行的 id 都是 undefined，融合时全部塌缩成一条 —— 
+         （2026-10-08 端到端测试抓到的 bug，离线评测因为移植时写了 c.id 而掩盖了它） */
+      const sql = 'SELECT c.id AS id, c.project_name, c.doc_title, c.section_path, c.facet, c.title, c.text ' +
         'FROM kb_chunks_fts f JOIN kb_chunks c ON c.id = f.rowid WHERE kb_chunks_fts MATCH ?' + projCond +
         ' ORDER BY bm25(kb_chunks_fts, 8.0, 1.0, 3.0, 2.0, 1.5) LIMIT ?';
       const binds = projBind ? [fts, projBind, Math.max(20, limit * 3)] : [fts, Math.max(20, limit * 3)];
@@ -382,7 +385,8 @@ async function searchKBOnce(env, question, limit, projectHint) {
     const conds = words.map(() => '(title LIKE ? OR text LIKE ?)').join(' OR ');
     const binds = [];
     words.forEach(w => binds.push(w, w));
-    let likeSql = 'SELECT project_name, doc_title, section_path, facet, title, text FROM kb_chunks WHERE (' + conds + ')';
+    /* 同样必须带 id（RRF 按 id 对齐；纯 FTS 路径用不到，但融合需要） */
+    let likeSql = 'SELECT id, project_name, doc_title, section_path, facet, title, text FROM kb_chunks WHERE (' + conds + ')';
     if (projectHint) { const c = likeSafe('project_name', projectHint); likeSql += ' AND ' + c.cond; binds.push(c.bind); }
     /* ★ 2026-10-08 修复：原来这里用 title LIKE '%<整句>%' 做「整句匹配排前」的微调，
        但 WHERE 里已经有最多 24 个 LIKE，再叠一个会把**整个语句**打空：
