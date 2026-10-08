@@ -184,7 +184,7 @@ function kbTerms(q) {
 }
 /* 项目名可能有多种写法（书名号、中点字符、中英混排），前端传的名字与库里存的未必逐字一致。
    生成一串「由严到宽」的候选，逐个试检索，命中即用 —— 解决「明明有资料却 0 命中」。 */
-function projKeys(hint) {
+export function projKeys(hint) {
   if (!hint) return [null];
   const out = [String(hint)];
   const stripped = String(hint).replace(/[《》〈〉「」【】（）()·・•‧\s]+/g, " ").trim();
@@ -270,7 +270,7 @@ function vecTop(index, qv, keys, topN) {
 
 /* 按 id 取回缺失切片的正文（向量独有命中需要）。 */
 
-async function searchKB(env, question, limit, projectHint) {
+export async function searchKB(env, question, limit, projectHint) {
   const pool = Math.max(limit * 3, 24);
   const keys = projectHint ? projKeys(projectHint) : null;
   /* ① 关键词侧（沿用原逻辑：从最严格的项目名开始试，命中即停） */
@@ -331,7 +331,7 @@ async function allByIds(env, ids) {
   return (r.results || []);
 }
 
-async function searchKBOnce(env, question, limit, projectHint) {
+export async function searchKBOnce(env, question, limit, projectHint) {
   const tlist = kbTerms(question);
   if (!tlist.length) return [];
   const out = [];
