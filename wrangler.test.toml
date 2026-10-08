@@ -1,0 +1,18 @@
+name = "xiaolu-stats-test"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "."
+
+# ⚠️ 测试项目专用配置（不是生产！）
+# 生产用 wrangler.toml；本文件只在跑测试时用 -c 指定：
+#   npx wrangler pages deploy . -c wrangler.test.toml --project-name xiaolu-stats-test
+
+# D1 绑定 → **测试库**（与生产库完全隔离）
+[[d1_databases]]
+binding = "DB"
+database_name = "xiaolu-stats-test"
+database_id = "f9137449-a9e0-4b9b-94cb-b53ba1629b8d"
+
+# Workers AI 绑定（混合检索的查询嵌入用）；生产项目目前没有这个绑定，
+# 所以即便把混合检索代码部署到生产，也会因为 env.AI 不存在而**自动退回纯 FTS**。
+[ai]
+binding = "AI"
