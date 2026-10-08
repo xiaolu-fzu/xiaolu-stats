@@ -137,15 +137,39 @@ async function rewriteQuery(env, question, lastReply) {
 /* ── 知识库检索：把项目文档切片查出来，作为回答依据（真 RAG 的 R 部分）── */
 const STOP = /^(为什么|什么|怎么|怎样|哪些|哪个|如何|可以|是否|这个|那个|以及|还是|不用|只用|我们|你们|他们|一个|一下|就是|不是|用了|有过|做过|关于|介绍)$/;
 function kbTerms(q) {
+  /* ★ 2026-10-08 修复：取词名额只有 12 个，而问句开头的客套话会把它吃光。
+     实测「我想知道洛克王国的商业化做的怎么样」开头的 3-gram 是
+     我想知 / 想知道 / 知道洛 / 道洛克 —— 4 个保底名额全给了这些废话，
+     真正有用的「洛克王」「商业化」一个都没进，FTS 于是 0 命中。
+     这里先剥掉常见客套开头再切 n-gram。 */
+  const OPENERS = /^(你好|您好|请问一下|请问|我想知道|我想问一下|我想问|想问一下|想问|帮我看看|帮我查查|帮我找找|帮我|能不能|可以帮我|你能否|麻烦你|那个|就是)/;
+  let q2 = String(q);
+  while (OPENERS.test(q2) && q2.length > 4) q2 = q2.replace(OPENERS, '');
   const whole = new Set(), bi = new Set(), tri = new Set();
-  const parts = String(q).split(/[\s,，。.？?！!、；;：:（）()【】「」《》"'\-—_\/\\|]+/).filter(Boolean);
+  const parts = q2.split(/[\s,，。.？?！!、；;：:（）()【】「」《》"'\-—_\/\\|]+/).filter(Boolean);
   for (const x of parts) {
     if (x.length <= 8) whole.add(x);
     for (let i = 0; i + 2 <= x.length; i++) bi.add(x.slice(i, i + 2));
     for (let i = 0; i + 3 <= x.length; i++) tri.add(x.slice(i, i + 3));
   }
   const ok = t => t.length >= 2 && !STOP.test(t) && !/^[0-9]+$/.test(t);
-  return [...[...whole].filter(ok), ...[...bi].filter(ok), ...[...tri].filter(ok)].slice(0, 12);
+  /* ★ 2026-10-08 修复：原来是「整词 → 2-gram → 3-gram」再 slice(0,12)。
+     中文长问句的 2-gram 数量随句长线性增长，很快就会占满 12 个名额，
+     使 3-gram 一个都轮不到 —— 而 **FTS 只接受 ≥3 字符的词**，
+     于是整个 FTS 被跳过，长问句只能落到 LIKE 兜底
+     （该兜底既没有相关性排序，又存在会打空结果集的缺陷）。
+     实测：「洛克王国怎么赚钱」8 字 → 3-gram 有 6 个 → FTS 执行 → 命中精准；
+     「我想知道洛克王国的商业化做的怎么样」17 字 → 3-gram 剩 0 个 → FTS 整段跳过 → 0 命中。
+     现在给 3-gram 保底 4 个名额（2-gram 相应让位），整词仍最优先。 */
+  const wholeL = [...whole].filter(ok);
+  const biL = [...bi].filter(ok);
+  const triL = [...tri].filter(ok);
+  const triTake = Math.min(triL.length, Math.max(4, 12 - wholeL.length - biL.length));
+  const biTake = Math.min(biL.length, Math.max(0, 12 - wholeL.length - triTake));
+  const list = [...wholeL, ...triL.slice(0, triTake), ...biL.slice(0, biTake)];
+  if (list.length < 12) list.push(...biL.slice(biTake, biTake + (12 - list.length)));
+  if (list.length < 12) list.push(...triL.slice(triTake, triTake + (12 - list.length)));
+  return list.slice(0, 12);
 }
 /* 项目名可能有多种写法（书名号、中点字符、中英混排），前端传的名字与库里存的未必逐字一致。
    生成一串「由严到宽」的候选，逐个试检索，命中即用 —— 解决「明明有资料却 0 命中」。 */
@@ -219,8 +243,13 @@ async function searchKBOnce(env, question, limit, projectHint) {
     words.forEach(w => binds.push(w, w));
     let likeSql = 'SELECT project_name, doc_title, section_path, facet, title, text FROM kb_chunks WHERE (' + conds + ')';
     if (projectHint) { likeSql += ' AND project_name LIKE ?'; binds.push('%' + projectHint + '%'); }
-    likeSql += ' ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END) LIMIT ?';
-    binds.push('%' + question + '%', limit - out.length);
+    /* ★ 2026-10-08 修复：原来这里用 title LIKE '%<整句>%' 做「整句匹配排前」的微调，
+       但 WHERE 里已经有最多 24 个 LIKE，再叠一个会把**整个语句**打空：
+       实测同一 SQL 连跑 4 次稳定返回 0 行；另一次直接报 "LIKE or GLOB pattern too complex"。
+       而它只是相关性微调，却一票否决了整条兜底 → 长问句 kbHits=0。
+       改用 instr() 做同样的子串判断：意图不变，但不占用 LIKE 的复杂度预算。 */
+    likeSql += ' ORDER BY (CASE WHEN instr(title, ?) > 0 THEN 0 ELSE 1 END) LIMIT ?';
+    binds.push(question, limit - out.length);
     try {
       const r2 = await env.DB.prepare(likeSql).bind(...binds).all();
       for (const x of (r2.results || [])) {
